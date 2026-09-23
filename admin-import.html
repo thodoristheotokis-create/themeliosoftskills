@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Εισαγωγή λογαριασμών — Soft Skills (Admin)</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; max-width:720px; margin:40px auto; padding:0 20px; color:#2B2640; background:#FFF7E6;}
+  h1{color:#282357; font-size:1.4rem;}
+  .card{background:#fff; border-radius:16px; padding:24px; box-shadow:0 6px 16px rgba(40,35,87,0.08); margin-bottom:20px;}
+  label{display:block; font-weight:600; margin:14px 0 6px; font-size:0.92rem;}
+  input[type=password]{
+    width:100%; padding:10px 12px; border-radius:10px; border:2px solid #E7E2F5; font-size:0.95rem; box-sizing:border-box;
+  }
+  input[type=file]{margin-top:6px;}
+  button{
+    background:#F69401; color:#fff; border:none; font-weight:700; padding:12px 22px;
+    border-radius:999px; cursor:pointer; font-size:0.95rem; margin-top:16px;
+  }
+  button:disabled{opacity:0.5; cursor:not-allowed;}
+  button:hover:not(:disabled){background:#282357;}
+  table{width:100%; border-collapse:collapse; margin-top:14px; font-size:0.85rem;}
+  th,td{text-align:left; padding:6px 8px; border-bottom:1px solid #eee;}
+  #log{white-space:pre-wrap; font-family:monospace; font-size:0.82rem; background:#2B2640; color:#d8f0d8; padding:14px; border-radius:10px; max-height:280px; overflow-y:auto; margin-top:14px;}
+  .warn{background:#FFF1CE; border-radius:10px; padding:12px 16px; font-size:0.88rem; margin-bottom:16px;}
+</style>
+</head>
+<body>
+
+<h1>🔒 Εισαγωγή λογαριασμών — Θεμέλιο (Admin)</h1>
+<p class="warn">Αυτή η σελίδα ΔΕΝ πρέπει να μπει σε κανένα μενού ή link του δημόσιου site. Το CSV διαβάζεται μέσα στον browser σου — δεν αποθηκεύεται πουθενά ως αρχείο στο site.</p>
+
+<div class="card">
+  <label for="secret">Admin secret</label>
+  <input type="password" id="secret" autocomplete="off" placeholder="Το ADMIN_SECRET από τα Netlify environment variables">
+
+  <label for="fileInput">Αρχείο CSV (username;password ή username,password, με ή χωρίς header)</label>
+  <input type="file" id="fileInput" accept=".csv,text/csv">
+
+  <div id="previewBox"></div>
+
+  <button id="importBtn" disabled>Εισαγωγή στο pool</button>
+  <div id="log" style="display:none;"></div>
+</div>
+
+<script>
+  let parsedRows = [];
+
+  function parseCsv(text){
+    const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (lines.length === 0) return [];
+
+    const delimiter = lines[0].includes(';') ? ';' : ',';
+    let startIdx = 0;
+    let userCol = 0, passCol = 1;
+
+    const firstCells = lines[0].split(delimiter).map(c => c.trim().toLowerCase());
+    if (firstCells.includes('username') || firstCells.includes('user')) {
+      startIdx = 1;
+      userCol = firstCells.findIndex(c => c === 'username' || c === 'user');
+      const passIdx = firstCells.findIndex(c => c === 'password' || c === 'pass');
+      passCol = passIdx >= 0 ? passIdx : 1;
+    }
+
+    const rows = [];
+    for (let i = startIdx; i < lines.length; i++) {
+      const cells = lines[i].split(delimiter).map(c => c.trim());
+      if (cells[userCol] && cells[passCol]) {
+        rows.push({ username: cells[userCol], password: cells[passCol] });
+      }
+    }
+    return rows;
+  }
+
+  document.getElementById('fileInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    parsedRows = parseCsv(text);
+
+    const preview = document.getElementById('previewBox');
+    if (parsedRows.length === 0) {
+      preview.innerHTML = '<p style="color:#B4432A;">Δεν βρέθηκαν έγκυρες γραμμές username/password.</p>';
+      document.getElementById('importBtn').disabled = true;
+      return;
+    }
+    const sample = parsedRows.slice(0, 5).map(r => `<tr><td>${r.username}</td><td>${'•'.repeat(6)}</td></tr>`).join('');
+    preview.innerHTML = `<p><b>${parsedRows.length}</b> λογαριασμοί βρέθηκαν. Προεπισκόπηση πρώτων 5:</p>
+      <table><tr><th>username</th><th>password</th></tr>${sample}</table>`;
+    document.getElementById('importBtn').disabled = false;
+  });
+
+  function log(msg){
+    const el = document.getElementById('log');
+    el.style.display = 'block';
+    el.textContent += msg + '\n';
+    el.scrollTop = el.scrollHeight;
+  }
+
+  document.getElementById('importBtn').addEventListener('click', async () => {
+    const secret = document.getElementById('secret').value.trim();
+    if (!secret) { alert('Βάλε το admin secret.'); return; }
+    if (parsedRows.length === 0) { alert('Διάλεξε πρώτα ένα CSV.'); return; }
+
+    document.getElementById('importBtn').disabled = true;
+    document.getElementById('log').textContent = '';
+    log(`Ξεκινάει εισαγωγή ${parsedRows.length} λογαριασμών...`);
+
+    const CHUNK_SIZE = 25;
+    let totalImported = 0, totalSkipped = 0;
+
+    for (let i = 0; i < parsedRows.length; i += CHUNK_SIZE) {
+      const chunk = parsedRows.slice(i, i + CHUNK_SIZE);
+      try {
+        const res = await fetch('/.netlify/functions/import-accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-admin-secret': secret },
+          body: JSON.stringify({ accounts: chunk })
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          log(`❌ Σφάλμα στο batch ${i}-${i+chunk.length}: ${data.error || 'άγνωστο σφάλμα'}`);
+          break;
+        }
+        totalImported += data.imported;
+        totalSkipped += data.skippedDuplicate;
+        log(`✅ Batch ${i+1}-${i+chunk.length}: +${data.imported} νέοι, ${data.skippedDuplicate} ήδη υπήρχαν (σύνολο στο pool: ${data.totalNowInPool})`);
+      } catch (err) {
+        log(`❌ Πρόβλημα σύνδεσης στο batch ${i}-${i+chunk.length}: ${err.message}`);
+        break;
+      }
+    }
+
+    log(`\nΤέλος. Σύνολο νέων εγγραφών: ${totalImported}. Παραλήφθηκαν ως ήδη υπάρχουσες: ${totalSkipped}.`);
+    document.getElementById('importBtn').disabled = false;
+  });
+</script>
+
+</body>
+</html>
